@@ -31,7 +31,7 @@ Taproot v2 (changes from v1):
     If the stack contains > 1 element after the control block
       G = pop
       Check tree inclusion
-// TODO: Check key only here to:
+      // TODO: Check key only here too
       run G'Root validation(G)
     Else
       Check tree inclusion
@@ -53,11 +53,11 @@ BBRoot:
         script = pop
         s = pop
         inputs = decompile(pop)
-	q, parity = run Taproot v2 validation with q = q, witness stack  = ...inputs, s, script, C
+        q, parity = run Taproot v2 validation with q = q, witness stack  = ...inputs, s, script, C
       else if len(C) >= 33:
         script = pop
         inputs = decompile(pop)
-	q, parity = run Taproot v2 validation, q = unknown, witness stack  = ...inputs, script, C
+        q, parity = run Taproot v2 validation, q = unknown, witness stack  = ...inputs, script, C
       Cn = pop
       push parity || q
       push Cn
