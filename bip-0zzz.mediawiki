@@ -1,0 +1,64 @@
+BBRoot
+
+Rough sketch:
+Define hash-to-curve (Hc), using IETF's constant time method
+
+SegWit v1 rules apply for removing annex
+
+Define SIGHASH_GRAFT which takes a Taproot (parity || pubkey) from the stack as the message, instead of the transaction
+
+G'Root validation, params: stack, optional graft message (G):
+  q = pop
+  script = pop
+  s = pop
+  p = q - Hc(script)
+  s must be a valid signature for p
+    Note: p may be a bare pubkey, or a taproot tweaked pubkey, requiring a tweaked secret key
+  continue with Tapscript execution
+
+Taproot v2 (changes from v1):
+  Change calculation of Taptweak to use Hc
+  If q is unknown, skip equality check
+  Return q, parity
+  Taproot rules apply if stack has only one remaining element
+  Internal pubkey may now have Hc(script) included
+  Relax Taproot validation to allow control block (C) of length 1
+  If len(C) = 1
+    push q
+    run G'Root validation
+  Define tapscript version 0xc2 to be chained/Grafted Taproot:
+    Before checking tree inclusion
+    If the stack contains > 1 element after the control block
+      G = pop
+      Check tree inclusion
+// TODO: Check key only here to:
+      run G'Root validation(G)
+    Else
+      Check tree inclusion
+
+BBRoot:
+  If the last non-annex witness element has length 2 and first byte 0xc0, chained/Grafted taproot:
+    B = pop
+    If B[1] & 0x80: Fail
+    Number of chain depth (D) is B[1]
+    For i from D to 1:
+      C = pop
+      If len(C) = 0
+        q = pop
+        s = pop
+        Validate s as a Taproot key path spend
+        continue
+      if len(C) = 1:
+        q = pop
+        script = pop
+        s = pop
+        inputs = decompile(pop)
+	q, parity = run Taproot v2 validation with q = q, witness stack  = ...inputs, s, script, C
+      else if len(C) >= 33:
+        script = pop
+        inputs = decompile(pop)
+	q, parity = run Taproot v2 validation, q = unknown, witness stack  = ...inputs, script, C
+      Cn = pop
+      push parity || q
+      push Cn
+    run Taproot v2 validation (depth 0)
