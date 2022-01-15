@@ -1,64 +1,71 @@
-BBRoot
+Reroot
+
+
+
 
 Rough sketch:
 Define hash-to-curve (Hc), using IETF's constant time method
 
 SegWit v1 rules apply for removing annex
 
+Define H = SHA256(uncompressedDER(SECP256K1_GENERATOR_POINT))
+
 Define SIGHASH_GRAFT which takes a Taproot (parity || pubkey) from the stack as the message, instead of the transaction
 
-G'Root validation, params: stack, optional graft message (G):
-  q = pop
-  script = pop
+Key Path validation, params: q, G?, stack:
   s = pop
+  s must be a valid signature for q (respecting SIGHASH flags, using the value hash<sub>Graftroot</sub>(G) as the message for SIGHASH_GRAFT)
+    Note: q may be a bare pubkey, or a taproot tweaked pubkey, requiring a tweaked secret key
+
+G'Root validation, params: q, C, G?, stack:
+  script = pop
   p = q - Hc(script)
-  s must be a valid signature for p
-    Note: p may be a bare pubkey, or a taproot tweaked pubkey, requiring a tweaked secret key
-  continue with Tapscript execution
+  if p != H
+    run Key Path validation(p, G, stack)
+  run Tapscript(C, script, stack)
 
-Taproot v2 (changes from v1):
+Reroot (SegWit v2), params: q, stack, qp?:
   Change calculation of Taptweak to use Hc
-  If q is unknown, skip equality check
-  Return q, parity
-  Taproot rules apply if stack has only one remaining element
-  Internal pubkey may now have Hc(script) included
-  Relax Taproot validation to allow control block (C) of length 1
-  If len(C) = 1
+  If len(stack) = 1
     push q
-    run G'Root validation
-  Define tapscript version 0xc2 to be chained/Grafted Taproot:
-    Before checking tree inclusion
-    If the stack contains > 1 element after the control block
-      G = pop
-      Check tree inclusion
-      // TODO: Check key only here too
-      run G'Root validation(G)
-    Else
-      Check tree inclusion
-
-BBRoot:
-  If the last non-annex witness element has length 2 and first byte 0xc0, chained/Grafted taproot:
-    B = pop
-    If B[1] & 0x80: Fail
-    Number of chain depth (D) is B[1]
-    For i from D to 1:
-      C = pop
-      If len(C) = 0
-        q = pop
+    push empty
+  C = pop
+  If len(C) = 0
+    qi = pop
+    run Key Path validation(qi, qp, stack)
+  Else if len(C) = 1
+    qi = pop
+    run G'Root validation(qi, C, qp, stack)
+    run OP_VERIFY
+  Else
+    script_version = C[0] & 0xfe
+    if script_version != 0xc2
+      script = pop
+      qi = run Taptree root(C, script)
+      run Tapscript(C, script, stack)
+      run OP_VERIFY
+    else
+      top = peak
+      if top != NULL AND len(top) != 0 // Graftroot
+        qo = pop
         s = pop
-        Validate s as a Taproot key path spend
-        continue
-      if len(C) = 1:
-        q = pop
-        script = pop
-        s = pop
-        inputs = decompile(pop)
-        q, parity = run Taproot v2 validation with q = q, witness stack  = ...inputs, s, script, C
-      else if len(C) >= 33:
-        script = pop
-        inputs = decompile(pop)
-        q, parity = run Taproot v2 validation, q = unknown, witness stack  = ...inputs, script, C
-      Cn = pop
-      push parity || q
-      push Cn
-    run Taproot v2 validation (depth 0)
+        top_but_1 = peak
+        push s
+        if top_but_1 = NULL OR len(top_but_1) = 0
+          run Key Path validation(qo, qp, stack)
+        else
+          run G'Root validation(qo, qp, stack)
+          run OP_VERIFY
+        qp = qo
+      qi = run Taptree root(C, qp)
+  top = pop
+  if top != NULL AND len(top) != 0
+    fail
+  if top == NULL
+    if q != x(qi)
+      fail
+    if len(C) > 0 && C & 0x01 != parity(qi)
+      fail
+    push OP_TRUE
+    return
+  run Reroot(q, stack, qi)
