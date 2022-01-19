@@ -1,84 +1,211 @@
-Reroot
+Hello!
 
-Rough sketch:
-Define hash-to-curve (Hc), using IETF's constant time method
-Change calculation of Taptweak to use Hc
+This is an attempt to make concrete most of the ideas that Pieter Wuille
+expressed in his (now (in?)famous) unfinished Entroot email[1]. As described by
+Pieter, Entroot is an outgrowth / extension of Graftroot[3], G'Root[4], and his
+conversation with Anthony Towns.
 
-SegWit v1 rules apply for removing annex
+This enables the following funtionality beyond SegWit v1 Taproot:
+* Script-only spends without the need to reveal an internal pubkey (ie. similar
+  efficiency to P2WSH)
+* Key path spends as leaf nodes, at a 1 WU savings compared to Tapscript.
+* Delegation to another Entroot key from any key node (~=Graftroot)
+* Key AND script conditions (part of G'Root)
+* Key AND script AND Entroot (combining the above)
 
-Define H = SHA256(uncompressedDER(SECP256K1_GENERATOR_POINT))
+Rough description:
 
-Define SIGHASH_GRAFT which takes a Taproot (parity || pubkey) from the stack as the message, instead of the transaction
+Conceptually an Entroot tree consists of the 4 node types:
+Q, a condition point (pubkey & optional Tapscript)
+Qs, a condition point with no pubkey
+M, a Merkle tree internal node (any | any)
+T, a Taproot (Q | any)
 
-Key Path validation, params: q, G?, stack:
+The Entroot, ie. the node whose key representation becomes the witness program may be T, Q or Qs.
+
+Additionally, an additional Entroot may be grafted to any Q by signing the
+graft key with the Q's private key, and inserting the signature and Q in the
+stack below the corresponding control block.
+
+To facilitate these features, I extend / modify Taproot verification in the
+following ways:
+* Control blocks may now be 1, 2, 33+32m, or 34+32m bytes.
+  * A 1-byte control block is the script version for a root-level condition
+    point with a script.
+  * The extra byte in other control blocks serves 2 purposes: 
+    * It encodes the number of witness stack elements to be consumed below this
+      control block before another control block (or the top of the stack)
+    * It enables us to distinguish between a signature and a control block when
+      there is exactly one element left on the stack, and the control block
+      would otherwise be 65 bytes.
+  * A 2-byte control block is a grafted condition point, and the script version
+    is ignored if there is no script
+* As eluded to above, script verification now occurs with a top-slice of the
+  witness stack as input.
+* I describe Taproot's non-key verification sequence as:
+  1) calculate root
+  2) verify inclusion in witness program
+  3) verify script
+  Entroot non-key verification proceeds as:
+  1) verify graft, key, and/or script
+  2) calculate root
+  3) either
+    a) recursively pass the root as input to another round
+    b) verify inclusion in witness program
+
+I think this will start to make much more sense with some examples:
+
+1) Initial desired spending condition is a signature from a pubkey, and a CLTV.
+
+Taproot:
+witness program (32 bytes):
+  dummy + hash_taptweak(dummy || hash_tapleaf(script_with_version_and_size))*G
+spending witness (135 bytes):
+  sig(64) script(38) control(33)
+
+P2WSH:
+witness program (32 bytes):
+  SHA256(script)
+spending witness(~111 bytes):
+  sig(~72) script(39)
+
+Entroot bare script:
+witness program (32 bytes):
+  hash_to_curve(script)
+spending witness (103 bytes):
+  sig(64) script(38) control(1)
+
+Entroot condition point:
+witness program (32 bytes):
+  pubkey + hash_to_curve(script)
+spending witness (70 bytes):
+  sig(64) script(5) control(1)
+
+Delegated to another key, CLTV still verified:
+spending witness(169 bytes):
+  sig(65) script(5) control(1) sig(64) delegateKey(32) control(2)
+
+2) Now key1, or key2 AND CLTV:
+
+Taproot:
+witness program (32 bytes):
+  pubkey1 + hash_taptweak(pubkey1 || hash_tapleaf(script_with_version_and_size))*G
+spending witness key1(64 bytes):
+  sig(64)
+spending witness key2(135 bytes):
+  sig(64) script(38) control(33)
+
+Entroot condition point:
+point = pubkey2 + hash_to_curve(script_with_version)
+witness program (32 bytes):
+  pubkey1 + hash_taptweak(pubkey1 || hash_tapleaf(point))
+spending witness key1(64 bytes):
+  sig(64)
+spending witness key2(134 bytes):
+  sig(64) script(5) point(32) control(33)
+
+Delegated to another key, CLTV still verified:
+spending witness(233 bytes):
+  sig(65) script(5) point(32) control(33) sig(64) delegateKey(32) control(2)
+
+
+Entroot requires a new SegWit version. The witness program is treated as the X coordinate of even pubkey Q, as in SegWit v1. To verify a Entroot spend, run Entroot(Q, witness, NULL).
+
+SegWit v1 rules apply for removing annex.
+
+Here's a pseudocode description of Entroot verification as I've described:
+
+Define hash-to-curve (Hc) using one of the methods described in Entroot[1], or IETF[2]
+
+Define SIGHASH_GRAFT, which uses bytes(x(G)) as the message
+
+Define Key Path validation, params: Q, G?, stack:
   s = pop
-  s must be a valid signature for q (respecting SIGHASH flags, using the value hash<sub>Graftroot</sub>(G) as the message for SIGHASH_GRAFT)
-    Note: q may be a bare pubkey, or a taproot tweaked pubkey, requiring a tweaked secret key
+  if G != NULL AND sighash_flags(s) != SIGHASH_GRAFT
+    fail
+  s must be a valid signature for Q
 
-G'Root validation, params: q, script_version, G?, stack:
+Define Tapscript verification, params: script_version, script, stack:
+  Execute the script, according to the rules applicatible to script_version,
+  using stack as initial stack. If no rules are defined for script_version,
+  succeed.
+
+Define Condition Point validation, params: Q, script_version, G?, stack:
   script = pop
-  p = q - Hc(script)
-  if p != H
-    run Key Path validation(p, G, stack)
+  H = Hc(script_version || script)
+  if x(Q) != x(H)
+    P = Q - H
+    run Key Path validation(P, G, stack)
+  else if G != NULL
+    fail // Must provide a key+signature for Graft
   run Tapscript verification(script_version, script, stack)
 
-Reroot (SegWit v2), params: q, stack, qp?:
+Define Entroot helper, params: c, Q:
+  b = len(c) % 32
+  p = c[b:b+32]
+  P = lift_x(int(p))
+  m = floor(len(c) / 32) - 1
+  if m > 128
+    fail
+  k = hash_tapleaf(bytes(x(Q)))
+  for j in [1, 1, ..., m]
+    e = c[b+32j:b+32+32j]
+    if k < e
+      k = hash_tapbranch(kj || ej)
+    else
+      k = hash_tapbranch(ej || kj)
+  T = hash_taptweak(p || k)*Generator
+  return P + T
 
-  If len(stack) = 1
-    run Key Path validation(q, NULL, stack)
+Define Entroot, params: Q, stack, Qp?:
+
+  if len(stack) = 1 & len(top(stack)) IN (64, 65)
+    run Key Path validation(Q, Qp, stack)
     return
 
-  C = pop
-  // TODO: Remove this - instead, process keypath of a descendant taptree in the parent
-  // If len(C) = 0 
-  //   qi = pop
-  //   run Key Path validation(qi, qp, stack)
-  If len(C) = 1
-    run G'Root validation(q, C, NULL, stack)
+  c = pop
+  script_version = c[0] & 0xfe
+
+  If len(c) = 1
+    run Condition Point validation(Q, script_version, Qp, stack)
     return
 
-  script_version = C[0] & 0xfe
-  if len(C) % 32 = 2
-    inner_stack_len = C[1]
+  if len(c) % 32 = 2
+    inner_stack_len = c[1]
     if len(stack) < inner_stack_len
       fail
     my_stack = cut_n(stack, inner_stack_len)
   else
     my_stack = stack
 
-  if script_version = 0xc0
-    script = pop
-    qi = run Taptree root(C, script)
-    run Tapscript verification(script_version, script, my_stack)
-  else if script_version = 0xc2
-    if qp = null // Key Path or G'Root
-      if len(my_stack) < 2
-        fail
-      qp = pop(my_stack)
-      if len(my_stack) = 1
-        run Key Path validation(qp, NULL, my_stack)
-      else
-        g_root_script_version = pop(my_stack)
-        run G'Root validation(qp, g_root_script_version, NULL, my_stack)
-    else if qp != null // Graftroot or chained taproot
-      if len(my_stack) != 0 // Graftroot
-        if len(my_stack) < 2
-          fail
-        qo = pop(my_stack)
-        if len(my_stack) = 1
-          run Key Path validation(qo, qp, my_stack)
-        else
-          g_root_script_version = pop(my_stack)
-          run G'Root validation(qo, g_root_script_version, qp, my_stack)
-        qp = qo
-    qi = run Taptree root(C, qp)
+  if len(my_stack) = 0 // chained Taproot
+    pass
+  else // chained Key Path / Condition Point evaluation, Qp != NULL => Graftroot
+    if len(my_stack) < 2
+      fail
+    Qo = lift_x(int(pop(my_stack)))
+    if len(my_stack) = 1
+      script_version = NULL
+      run Key Path validation(Qo, Qp, my_stack)
+    else
+      run Condition Point validation(Qo, script_version, Qp, my_stack)
+    Qp = Qo
+  if len(c) = 2
+    Qi = Qp
   else
-    return
+    Qi = run Entroot helper(c, Qp)
+
+  if c[0] & 0x01 != parity(Qi)
+    fail
 
   if len(stack) = 0
-    if q != x(qi)
-      fail
-    if C[0] & 0x01 != parity(qi)
+    if x(Q) != x(Qi)
       fail
     return
-  run Reroot(q, stack, qi)
+
+  run Entroot(Q, stack, Qi)
+
+[1]: https://gist.github.com/sipa/ca1502f8465d0d5032d9dd2465f32603
+[2]: https://www.ietf.org/archive/id/draft-irtf-cfrg-hash-to-curve-10.html
+[3]: https://lists.linuxfoundation.org/pipermail/bitcoin-dev/2018-February/015700.html
+[4]: https://lists.linuxfoundation.org/pipermail/bitcoin-dev/2018-July/016249.html
