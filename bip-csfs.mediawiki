@@ -1,0 +1,105 @@
+<pre>
+  BIP: TBD
+  Layer: Consensus (soft fork)
+  Title: CHECKSIGFROMSTACK
+  Author: Brandon Black <freedom@reardencode.com>
+  Comments-Summary: No comments yet.
+  Status: Draft
+  Type: Standards Track
+  Created: 2023-12-22
+  License: PD
+</pre>
+
+==Abstract==
+
+This BIP describes two new opcode for the purpose of checking cryptographic
+signatures in bitcoin scripts against data other than bitcoin transactions.
+
+==Specification==
+
+We propose replacing OP_NOP5 in bitcoin script with
+'''OP_CHECKSIGFROMSTACKVERIFY'''. When verifying taproot script spends having
+leaf version 0xc0 (as defined in BIP342), we propose '''OP_CHECKSIGFROMSTACK'''
+to replace '''OP_SUCCESS188''' (0xbc).
+
+'''OP_CHECKSIGFROMSTACK''' and '''OP_CHECKSIGFROMSTACKVERIFY''' have identical
+semantics to '''OP_CHECKSIG''' and '''OP_CHECKSIGVERIFY''' respectively,
+except:
+
+* On success the arguments to '''OP_CHECKSIGFROMSTACKVERIFY''' are left unchanged on the stack.
+* They pop (or read, respectively) 3 arguments (rather than 2) from the stack in the following order: '''&lt;pubkey&gt; &lt;data&gt; &lt;sig&gt;'''
+* Signatures must not have a sighash byte appended
+* The message being verified is '''&lt;data&gt;'''
+** '''&lt;data&gt;''' may be any length.
+** For ECDSA signature verification '''&lt;data&gt;''' is SHA256 hashed before being used as the message.
+
+==Design Considerations==
+
+# Message hashing: ECDSA requires the message to be securely hashed to 32-bytes before being used in the signing protocol, so a SHA256 hash is taken before the message is passed for ECDSA signing. BIP340 is compatible with any size of message and does not require it to be a securely hashed input, so the message is not hashed prior to BIP340 signing.
+# Verify NOP upgrade: To bring both ECDSA and BIP340 signing to bitcoin script, a NOP upgrade path was chosen for '''OP_CHECKSIGFROMSTACKVERIFY'''. This necessarily means leaving the 3 arguments on the stack when executing '''OP_CHECKSIGFROMSTACKVERIFY'''. Scripts will need to drop or otherwise manage these stack elements.
+# Add/multisig: No concession is made to ```OP_CHECKMULTISIG``` or ```OP_CHECKSIGADD``` semantics with '''OP_CHECKSIGFROMSTACK(VERIFY)'''. In Tapscript, add semantics can be implemented with 1 additional vByte per key ('''OP_TOALTSTACK OP_CHECKSIGFROMSTACK OP_FROMALTSTACK OP_ADD OP_TOALTSTACK''').
+# Splitting R/S on the stack: Implementing split/separate signatures is left as an exercise for future bitcoin upgrades, such as '''OP_CAT'''.
+# BIP118-style Taproot internal key: Rather than introducing an additional key type in this change, we suggest implementing OP_INTERNALKEY or separately introducing that key type for all Tapscript signature checking operations in a separate change.
+# Unknown key lengths: The semantics of other signature checking opcodes in their respective script types (legacy, segwit-v0, tapscript-c0) are applied.
+
+==Resource Limits==
+
+These opcodes are treated identically to other signature checking opcodes and
+count against the various sigops limits in their respective script types.
+
+==Motivation==
+
+===LN Symmetry===
+
+When combined with '''OP_CHECKTEMPLATEVERIFY''' (BIP119/CTV),
+'''OP_CHECKSIGFROMSTACK''' (CSFS) can be used in Lightning Symmetry channels.
+The construction '''OP_CHECKTEMPLATEVERIFY &lt;pubkey&gt; OP_CHECKSIGFROMSTACK''' is
+logically equivalent to '''&lt;bip118_pubkey&gt; OP_CHECKSIG''' and a signature over
+'''SIGHASH_ALL|SIGHASH_ANYPREVOUTANYSCRIPT'''. The '''OP_CHECKSIGFROMSTACK'''
+construction is 8 vBytes larger.
+
+===Delegation===
+
+Using a script like:
+'''OP_DUP &lt;pubkey&gt; OP_CHECKSIGFROMSTACK OP_DROP OP_CHECKSIG'''
+A script can delegate signing to another key.
+
+==Reference Implementation==
+
+A reference implementation is provided in provided here:
+
+https://github.com/brandonblack/bitcoin/commit/bf375614f7bd73a2a84cdd4b660e6c02ad4bcbc3
+
+==Backward Compatibility==
+
+By constraining the behavior of an OP_SUCCESS opcode and an OP_NOP opcode,
+deployment of the BIP can be done in a backwards compatible, soft-fork manner.
+If anyone were to rely on the OP_SUCCESS behavior of OP_SUCCESS188,
+OP_CHECKSIGFROMSTACk would invalidate their spend.
+
+==Deployment==
+
+TBD
+
+==Credits==
+
+Reference implementation was made with reference to the implementation in
+Elements and started by moonsettler.
+
+==References==
+
+[https://github.com/bitcoin/bips/blob/master/bip-0119.mediawiki BIP 119] CHECKTEMPLATEVERIFY
+
+[https://github.com/bitcoin/bips/blob/master/bip-0119.mediawiki BIP 118] SIGHASH_ANYPREVOUT
+
+[https://github.com/bitcoin/bips/blob/master/bip-0341.mediawiki BIP 340] Schnorr Signatures
+
+[https://github.com/bitcoin/bips/blob/master/bip-0341.mediawiki BIP 341] Taproot
+
+[https://github.com/bitcoin/bips/blob/master/bip-0342.mediawiki BIP 342] Tapscript
+
+[https://github.com/EthanHeilman/op_cat_draft/blob/main/cat.mediawiki OP_CAT]
+
+==Copyright==
+
+This document is placed in the public domain.
